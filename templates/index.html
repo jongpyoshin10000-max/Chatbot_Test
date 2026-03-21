@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>멀티모달 챗봇</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <h2>AI Workspace</h2>
+        <p>ChatGPT/Gemini 스타일 UI</p>
+        <button id="newChatBtn">+ 새 대화</button>
+        <div class="small">모델: 외부 LLM API</div>
+      </aside>
+      <main class="main">
+        <header>
+          <h1>멀티모달 챗봇</h1>
+          <div class="actions">
+            <button id="voiceBtn">🎤 음성모드</button>
+            <button id="genImageBtn">🖼️ 이미지 생성</button>
+            <button id="genFileBtn">📄 파일 생성</button>
+          </div>
+        </header>
+        <section id="chat"></section>
+        <form id="chatForm">
+          <input id="fileInput" type="file" multiple />
+          <textarea id="message" placeholder="메시지를 입력하세요. 이미지/문서/PDF 첨부 가능"></textarea>
+          <button type="submit">전송</button>
+        </form>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
