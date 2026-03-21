@@ -8,7 +8,6 @@ import fs from 'fs/promises';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
-import { pipeline } from '@xenova/transformers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,50 +51,49 @@ function resolveApiKey(headerKey) {
 
 async function chatCompletion(messages, headerKey = '') {
   const apiKey = resolveApiKey(headerKey);
-  const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ model: LLM_MODEL, messages, temperature: 0.4 })
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`LLM error: ${text}`);
-  }
-
-  const data = await response.json();
-  return data?.choices?.[0]?.message?.content || '응답을 생성하지 못했습니다.';
-}
-
-
-let imageCaptioner = null;
-async function getImageCaptioner() {
-  if (!imageCaptioner) {
-    imageCaptioner = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning');
-  }
-  return imageCaptioner;
-}
-
-async function describeImageWithOpenModel(file) {
   try {
-    const captioner = await getImageCaptioner();
-    const tempName = `tmp_${crypto.randomUUID().slice(0, 8)}_${file.originalname || 'image'}`;
-    const tempPath = path.join(GENERATED_DIR, tempName);
-    await fs.writeFile(tempPath, file.buffer);
-    const result = await captioner(tempPath);
-    await fs.unlink(tempPath).catch(() => {});
-    const text = Array.isArray(result) ? result.map((x) => x.generated_text).join(' ') : '';
-    return text || '이미지 내용을 판독하지 못했습니다.';
+    const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model: LLM_MODEL, messages, temperature: 0.4 }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`LLM error: ${text}`);
+    }
+
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content || '응답을 생성하지 못했습니다.';
   } catch (e) {
-    return `이미지 캡셔닝 실패: ${e.message}`;
+    if (e.name === 'AbortError') {
+      throw new Error('LLM 응답 시간이 초과되었습니다. 다시 시도해 주세요.');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 function isImageFile(file) {
   return file?.mimetype?.startsWith('image/');
+}
+
+async function getImageQuickHint(file) {
+  try {
+    const meta = await sharp(file.buffer).metadata();
+    const sizeKB = Math.round(file.size / 1024);
+    return `이미지 정보: format=${meta.format}, width=${meta.width}, height=${meta.height}, size=${sizeKB}KB`;
+  } catch {
+    return '이미지 메타데이터를 읽지 못했습니다.';
+  }
 }
 
 async function extractTextFromFile(file) {
@@ -117,12 +115,9 @@ async function buildMessages({ message, historyRaw, files, onStatus }) {
   for (const file of files || []) {
     if (isImageFile(file)) {
       const base64 = file.buffer.toString('base64');
-      const localCaption = await describeImageWithOpenModel(file);
+      const quickHint = await getImageQuickHint(file);
       userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
-      userContent.push({
-        type: 'text',
-        text: `첨부 이미지(${file.originalname})를 분석해줘. 참고용 로컬 비전 캡션: ${localCaption}`
-      });
+      userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname})를 분석해줘. ${quickHint}` });
       continue;
     }
 
@@ -178,6 +173,17 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
   }
 });
 
+app.get('/download/:filename', async (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const fullPath = path.join(GENERATED_DIR, filename);
+  try {
+    await fs.access(fullPath);
+    res.download(fullPath, filename);
+  } catch {
+    res.status(404).json({ detail: '파일을 찾을 수 없습니다.' });
+  }
+});
+
 app.post('/api/generate/image', express.urlencoded({ extended: true }), async (req, res) => {
   try {
     const prompt = req.body.prompt || 'Untitled';
@@ -197,7 +203,11 @@ app.post('/api/generate/image', express.urlencoded({ extended: true }), async (r
       </svg>`;
 
     await sharp(Buffer.from(svg)).png().toFile(outputPath);
-    res.json({ url: `/generated/${name}`, filename: name });
+    res.json({
+      url: `/generated/${name}`,
+      download_url: `/download/${name}`,
+      filename: name
+    });
   } catch (error) {
     res.status(500).json({ detail: error.message || '이미지 생성 실패' });
   }
@@ -216,7 +226,11 @@ app.post('/api/generate/file', express.urlencoded({ extended: true }), async (re
     const name = `file_${crypto.randomUUID().slice(0, 8)}.${format}`;
     const outputPath = path.join(GENERATED_DIR, name);
     await fs.writeFile(outputPath, content, 'utf-8');
-    res.json({ url: `/generated/${name}`, filename: name });
+    res.json({
+      url: `/generated/${name}`,
+      download_url: `/download/${name}`,
+      filename: name
+    });
   } catch (error) {
     res.status(500).json({ detail: error.message || '파일 생성 실패' });
   }
