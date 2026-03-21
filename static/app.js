@@ -6,10 +6,19 @@ const voiceBtn = document.getElementById('voiceBtn');
 const genImageBtn = document.getElementById('genImageBtn');
 const genFileBtn = document.getElementById('genFileBtn');
 const newChatBtn = document.getElementById('newChatBtn');
+const settingsBtn = document.getElementById('settingsBtn');
 
 let history = [];
 let voiceMode = false;
 let recognition = null;
+
+let runtimeApiKey = localStorage.getItem('llm_api_key') || '';
+
+function buildHeaders() {
+  const headers = {};
+  if (runtimeApiKey) headers['x-llm-api-key'] = runtimeApiKey;
+  return headers;
+}
 
 function addMsg(role, text) {
   const div = document.createElement('div');
@@ -26,7 +35,7 @@ async function sendMessage(message, files = []) {
   formData.append('history', JSON.stringify(history));
   files.forEach(f => formData.append('files', f));
 
-  const res = await fetch('/api/chat', { method: 'POST', body: formData });
+  const res = await fetch('/api/chat', { method: 'POST', headers: buildHeaders(), body: formData });
   const data = await res.json();
   const answer = data.answer || data.detail || '오류가 발생했습니다.';
   addMsg('assistant', answer);
@@ -93,7 +102,21 @@ genFileBtn.addEventListener('click', async () => {
   const fd = new FormData();
   fd.append('prompt', promptText);
   fd.append('format', 'md');
-  const res = await fetch('/api/generate/file', { method: 'POST', body: fd });
+  const res = await fetch('/api/generate/file', { method: 'POST', headers: buildHeaders(), body: fd });
   const data = await res.json();
   addMsg('assistant', `파일을 생성했습니다: ${location.origin}${data.url}`);
+});
+
+settingsBtn.addEventListener('click', () => {
+  const current = runtimeApiKey ? `${runtimeApiKey.slice(0, 6)}...` : '(미설정)';
+  const input = prompt(`외부 LLM API Key를 입력하세요.\n현재: ${current}\n비워두고 확인하면 저장된 키를 삭제합니다.`, runtimeApiKey);
+  if (input === null) return;
+  runtimeApiKey = input.trim();
+  if (runtimeApiKey) {
+    localStorage.setItem('llm_api_key', runtimeApiKey);
+    alert('API Key가 저장되었습니다.');
+  } else {
+    localStorage.removeItem('llm_api_key');
+    alert('저장된 API Key를 삭제했습니다.');
+  }
 });

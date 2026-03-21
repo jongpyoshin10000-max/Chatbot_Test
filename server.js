@@ -40,21 +40,23 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'templates', 'index.html'));
 });
 
-function ensureApiKey() {
-  if (!LLM_API_KEY) {
-    const err = new Error('LLM_API_KEY is not configured.');
-    err.status = 500;
+function resolveApiKey(headerKey) {
+  const key = (headerKey || "").trim() || LLM_API_KEY;
+  if (!key) {
+    const err = new Error('LLM API key is missing. Configure env or use settings button.');
+    err.status = 400;
     throw err;
   }
+  return key;
 }
 
-async function chatCompletion(messages) {
-  ensureApiKey();
+async function chatCompletion(messages, headerKey = "") {
+  const apiKey = resolveApiKey(headerKey);
 
   const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${LLM_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ model: LLM_MODEL, messages, temperature: 0.4 })
@@ -93,6 +95,7 @@ app.post('/api/chat', upload.array('files'), async (req, res) => {
   try {
     const message = req.body.message || '';
     const history = JSON.parse(req.body.history || '[]');
+    const headerKey = req.header('x-llm-api-key') || '';
 
     const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
     for (const item of history.slice(-12)) {
@@ -119,7 +122,7 @@ app.post('/api/chat', upload.array('files'), async (req, res) => {
     }
 
     messages.push({ role: 'user', content: userContent });
-    const answer = await chatCompletion(messages);
+    const answer = await chatCompletion(messages, headerKey);
     res.json({ answer });
   } catch (error) {
     res.status(error.status || 500).json({ detail: error.message || '서버 오류' });
@@ -155,10 +158,11 @@ app.post('/api/generate/file', express.urlencoded({ extended: true }), async (re
   try {
     const prompt = req.body.prompt || '';
     const format = req.body.format === 'txt' ? 'txt' : 'md';
+    const headerKey = req.header('x-llm-api-key') || '';
     const content = await chatCompletion([
       { role: 'system', content: 'Create downloadable content exactly as requested.' },
       { role: 'user', content: prompt }
-    ]);
+    ], headerKey);
 
     const name = `file_${crypto.randomUUID().slice(0, 8)}.${format}`;
     const outputPath = path.join(GENERATED_DIR, name);
