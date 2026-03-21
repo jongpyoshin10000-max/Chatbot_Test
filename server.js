@@ -14,7 +14,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
-
 const GENERATED_DIR = path.join(__dirname, 'generated');
 await fs.mkdir(GENERATED_DIR, { recursive: true });
 
@@ -41,7 +40,7 @@ app.get('/', (_req, res) => {
 });
 
 function resolveApiKey(headerKey) {
-  const key = (headerKey || "").trim() || LLM_API_KEY;
+  const key = (headerKey || '').trim() || LLM_API_KEY;
   if (!key) {
     const err = new Error('LLM API key is missing. Configure env or use settings button.');
     err.status = 400;
@@ -50,9 +49,8 @@ function resolveApiKey(headerKey) {
   return key;
 }
 
-async function chatCompletion(messages, headerKey = "") {
+async function chatCompletion(messages, headerKey = '') {
   const apiKey = resolveApiKey(headerKey);
-
   const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -77,55 +75,77 @@ function isImageFile(file) {
 
 async function extractTextFromFile(file) {
   const name = (file.originalname || '').toLowerCase();
-  if (name.endsWith('.txt') || name.endsWith('.md')) {
-    return file.buffer.toString('utf-8');
-  }
-  if (name.endsWith('.pdf')) {
-    const parsed = await pdfParse(file.buffer);
-    return parsed.text || '';
-  }
-  if (name.endsWith('.docx')) {
-    const parsed = await mammoth.extractRawText({ buffer: file.buffer });
-    return parsed.value || '';
-  }
+  if (name.endsWith('.txt') || name.endsWith('.md')) return file.buffer.toString('utf-8');
+  if (name.endsWith('.pdf')) return (await pdfParse(file.buffer)).text || '';
+  if (name.endsWith('.docx')) return (await mammoth.extractRawText({ buffer: file.buffer })).value || '';
   return '';
+}
+
+async function buildMessages({ message, historyRaw, files, onStatus }) {
+  onStatus?.('thinking');
+  const history = JSON.parse(historyRaw || '[]');
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const item of history.slice(-12)) messages.push({ role: item.role, content: item.content });
+
+  onStatus?.('analyzing');
+  const userContent = [{ type: 'text', text: message || '' }];
+  for (const file of files || []) {
+    if (isImageFile(file)) {
+      const base64 = file.buffer.toString('base64');
+      userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
+      userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname})를 분석해줘.` });
+      continue;
+    }
+
+    const extracted = await extractTextFromFile(file);
+    const excerpt = extracted ? extracted.slice(0, 12000) : '(텍스트 추출 실패 또는 미지원 형식)';
+    userContent.push({ type: 'text', text: `첨부 파일(${file.originalname}) 내용:\n${excerpt}` });
+  }
+
+  messages.push({ role: 'user', content: userContent });
+  return messages;
 }
 
 app.post('/api/chat', upload.array('files'), async (req, res) => {
   try {
-    const message = req.body.message || '';
-    const history = JSON.parse(req.body.history || '[]');
     const headerKey = req.header('x-llm-api-key') || '';
+    const messages = await buildMessages({
+      message: req.body.message,
+      historyRaw: req.body.history,
+      files: req.files
+    });
 
-    const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
-    for (const item of history.slice(-12)) {
-      messages.push({ role: item.role, content: item.content });
-    }
-
-    const userContent = [{ type: 'text', text: message }];
-    for (const file of req.files || []) {
-      if (isImageFile(file)) {
-        const base64 = file.buffer.toString('base64');
-        userContent.push({
-          type: 'image_url',
-          image_url: { url: `data:${file.mimetype};base64,${base64}` }
-        });
-        userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname})를 분석해줘.` });
-      } else {
-        const extracted = await extractTextFromFile(file);
-        const excerpt = extracted ? extracted.slice(0, 12000) : '(텍스트 추출 실패 또는 미지원 형식)';
-        userContent.push({
-          type: 'text',
-          text: `첨부 파일(${file.originalname}) 내용:\n${excerpt}`
-        });
-      }
-    }
-
-    messages.push({ role: 'user', content: userContent });
     const answer = await chatCompletion(messages, headerKey);
     res.json({ answer });
   } catch (error) {
     res.status(error.status || 500).json({ detail: error.message || '서버 오류' });
+  }
+});
+
+app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
+  const send = (event, payload) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+
+  try {
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const headerKey = req.header('x-llm-api-key') || '';
+    const messages = await buildMessages({
+      message: req.body.message,
+      historyRaw: req.body.history,
+      files: req.files,
+      onStatus: (phase) => send('status', { phase })
+    });
+
+    send('status', { phase: 'generating' });
+    const answer = await chatCompletion(messages, headerKey);
+    send('done', { answer });
+  } catch (error) {
+    send('error', { message: error.message || '서버 오류' });
+  } finally {
+    res.end();
   }
 });
 

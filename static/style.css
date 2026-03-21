@@ -11,6 +11,9 @@ header { display: flex; justify-content: space-between; align-items: center; pad
 .msg { max-width: 80%; padding: 14px; border-radius: 12px; line-height: 1.45; white-space: pre-wrap; }
 .user { align-self: flex-end; background: #3a5ef9; }
 .assistant { align-self: flex-start; background: #1d2432; border: 1px solid #2f3b52; }
-#chatForm { display: grid; grid-template-columns: 200px 1fr 120px; gap: 8px; padding: 12px; border-top: 1px solid #262c3a; }
+#llmStatus { padding: 8px 14px; font-size: 13px; color: #9db2ff; border-bottom: 1px solid #262c3a; }
+#attachInfo { padding: 0 4px; font-size: 12px; color: #9eaac8; align-self: center; }
+#chatForm { display: grid; grid-template-columns: 180px 1fr 150px 120px; gap: 8px; padding: 12px; border-top: 1px solid #262c3a; }
+#chatForm.dragging { background: #1d2432; outline: 2px dashed #4f7eff; }
 textarea { min-height: 64px; resize: vertical; padding: 10px; border-radius: 10px; border: 1px solid #333b4f; background: #141a26; color: #fff; }
 button { cursor: pointer; border: 1px solid #3a465f; border-radius: 10px; padding: 10px 12px; background: #1a2233; color: #eef3ff; }

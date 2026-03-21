@@ -7,11 +7,13 @@ const genImageBtn = document.getElementById('genImageBtn');
 const genFileBtn = document.getElementById('genFileBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const settingsBtn = document.getElementById('settingsBtn');
+const statusEl = document.getElementById('llmStatus');
+const attachInfoEl = document.getElementById('attachInfo');
 
 let history = [];
 let voiceMode = false;
 let recognition = null;
-
+let pendingFiles = [];
 let runtimeApiKey = localStorage.getItem('llm_api_key') || '';
 
 function buildHeaders() {
@@ -28,21 +30,105 @@ function addMsg(role, text) {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+function setStatus(type = 'idle') {
+  const map = {
+    idle: '대기 중',
+    thinking: '생각 중...',
+    analyzing: '파일 분석 중...',
+    generating: '답변 생성 중...'
+  };
+  statusEl.textContent = `상태: ${map[type] || type}`;
+}
+
+function renderAttachmentInfo() {
+  if (pendingFiles.length === 0) {
+    attachInfoEl.textContent = '첨부 파일 없음';
+    return;
+  }
+  const names = pendingFiles.slice(0, 3).map((f) => f.name).join(', ');
+  const more = pendingFiles.length > 3 ? ` 외 ${pendingFiles.length - 3}개` : '';
+  attachInfoEl.textContent = `첨부됨: ${names}${more}`;
+}
+
+function addPendingFiles(files) {
+  const arr = [...files].filter((f) => f && f.size > 0);
+  if (arr.length === 0) return;
+  pendingFiles = [...pendingFiles, ...arr];
+  renderAttachmentInfo();
+}
+
+function clearPendingFiles() {
+  pendingFiles = [];
+  fileInput.value = '';
+  renderAttachmentInfo();
+}
+
+function parseSSE(chunk) {
+  return chunk
+    .split('\n\n')
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const eventLine = block.split('\n').find((l) => l.startsWith('event:'));
+      const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
+      const event = eventLine ? eventLine.replace('event:', '').trim() : 'message';
+      const raw = dataLine ? dataLine.replace('data:', '').trim() : '{}';
+      let data = {};
+      try { data = JSON.parse(raw); } catch { data = { raw }; }
+      return { event, data };
+    });
+}
+
 async function sendMessage(message, files = []) {
   addMsg('user', message);
+  setStatus('thinking');
+
   const formData = new FormData();
   formData.append('message', message);
   formData.append('history', JSON.stringify(history));
-  files.forEach(f => formData.append('files', f));
+  files.forEach((f) => formData.append('files', f));
 
-  const res = await fetch('/api/chat', { method: 'POST', headers: buildHeaders(), body: formData });
-  const data = await res.json();
-  const answer = data.answer || data.detail || '오류가 발생했습니다.';
-  addMsg('assistant', answer);
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: formData
+  });
+
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    addMsg('assistant', `오류: ${text || '요청 실패'}`);
+    setStatus('idle');
+    return;
+  }
+
+  let answer = '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    if (!buffer.includes('\n\n')) continue;
+    const lastBoundary = buffer.lastIndexOf('\n\n');
+    const complete = buffer.slice(0, lastBoundary);
+    buffer = buffer.slice(lastBoundary + 2);
+
+    for (const evt of parseSSE(complete)) {
+      if (evt.event === 'status') setStatus(evt.data.phase);
+      if (evt.event === 'done') answer = evt.data.answer || '';
+      if (evt.event === 'error') answer = evt.data.message || '오류가 발생했습니다.';
+    }
+  }
+
+  addMsg('assistant', answer || '응답을 받지 못했습니다.');
   history.push({ role: 'user', content: message });
   history.push({ role: 'assistant', content: answer });
+  setStatus('idle');
 
-  if (voiceMode && 'speechSynthesis' in window) {
+  if (voiceMode && 'speechSynthesis' in window && answer) {
     speechSynthesis.speak(new SpeechSynthesisUtterance(answer));
   }
 }
@@ -50,11 +136,39 @@ async function sendMessage(message, files = []) {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const message = messageEl.value.trim();
-  const files = [...fileInput.files];
+  const files = [...pendingFiles];
   if (!message && files.length === 0) return;
   messageEl.value = '';
-  fileInput.value = '';
+  clearPendingFiles();
   await sendMessage(message || '첨부 파일을 분석해줘', files);
+});
+
+fileInput.addEventListener('change', (e) => addPendingFiles(e.target.files || []));
+
+['dragenter', 'dragover'].forEach((eventName) => {
+  form.addEventListener(eventName, (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    form.classList.add('dragging');
+  });
+});
+
+['dragleave', 'drop'].forEach((eventName) => {
+  form.addEventListener(eventName, (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    form.classList.remove('dragging');
+  });
+});
+
+form.addEventListener('drop', (e) => {
+  const dropped = e.dataTransfer?.files || [];
+  addPendingFiles(dropped);
+});
+
+messageEl.addEventListener('paste', (e) => {
+  const pasted = e.clipboardData?.files || [];
+  addPendingFiles(pasted);
 });
 
 voiceBtn.addEventListener('click', () => {
@@ -120,3 +234,6 @@ settingsBtn.addEventListener('click', () => {
     alert('저장된 API Key를 삭제했습니다.');
   }
 });
+
+renderAttachmentInfo();
+setStatus('idle');
