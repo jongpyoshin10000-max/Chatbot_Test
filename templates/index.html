@@ -12,6 +12,7 @@
         <h2>AI Workspace</h2>
         <p>ChatGPT/Gemini 스타일 UI</p>
         <button id="newChatBtn">+ 새 대화</button>
+        <div id="chatList" class="chat-list"></div>
         <div class="small">모델: 외부 LLM API</div>
       </aside>
       <main class="main">
@@ -27,10 +28,14 @@
         <div id="llmStatus">상태: 대기 중</div>
         <section id="chat"></section>
         <form id="chatForm">
-          <input id="fileInput" type="file" multiple />
-          <div id="attachInfo">첨부 파일 없음</div>
-          <textarea id="message" placeholder="메시지를 입력하세요. 이미지/문서/PDF 첨부 가능"></textarea>
-          <button type="submit">전송</button>
+          <div class="attach-row">
+            <input id="fileInput" type="file" multiple />
+            <div id="attachInfo">첨부 파일 없음</div>
+          </div>
+          <div class="input-row">
+            <textarea id="message" placeholder="메시지를 입력하세요. 이미지/문서/PDF 첨부 가능"></textarea>
+            <button type="submit">전송</button>
+          </div>
         </form>
       </main>
     </div>

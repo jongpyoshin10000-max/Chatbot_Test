@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
+import { pipeline } from '@xenova/transformers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,6 +70,30 @@ async function chatCompletion(messages, headerKey = '') {
   return data?.choices?.[0]?.message?.content || '응답을 생성하지 못했습니다.';
 }
 
+
+let imageCaptioner = null;
+async function getImageCaptioner() {
+  if (!imageCaptioner) {
+    imageCaptioner = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning');
+  }
+  return imageCaptioner;
+}
+
+async function describeImageWithOpenModel(file) {
+  try {
+    const captioner = await getImageCaptioner();
+    const tempName = `tmp_${crypto.randomUUID().slice(0, 8)}_${file.originalname || 'image'}`;
+    const tempPath = path.join(GENERATED_DIR, tempName);
+    await fs.writeFile(tempPath, file.buffer);
+    const result = await captioner(tempPath);
+    await fs.unlink(tempPath).catch(() => {});
+    const text = Array.isArray(result) ? result.map((x) => x.generated_text).join(' ') : '';
+    return text || '이미지 내용을 판독하지 못했습니다.';
+  } catch (e) {
+    return `이미지 캡셔닝 실패: ${e.message}`;
+  }
+}
+
 function isImageFile(file) {
   return file?.mimetype?.startsWith('image/');
 }
@@ -92,8 +117,12 @@ async function buildMessages({ message, historyRaw, files, onStatus }) {
   for (const file of files || []) {
     if (isImageFile(file)) {
       const base64 = file.buffer.toString('base64');
+      const localCaption = await describeImageWithOpenModel(file);
       userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
-      userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname})를 분석해줘.` });
+      userContent.push({
+        type: 'text',
+        text: `첨부 이미지(${file.originalname})를 분석해줘. 참고용 로컬 비전 캡션: ${localCaption}`
+      });
       continue;
     }
 

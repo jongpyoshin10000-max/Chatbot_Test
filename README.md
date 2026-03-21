@@ -3,6 +3,7 @@
 외부 LLM(OpenAI 호환 API)을 연결해, ChatGPT/Gemini 스타일 UX를 제공하는 **Node.js 기반 멀티모달 챗봇**입니다.
 
 ## 기능
+- 왼쪽 사이드바 채팅방 목록(멀티 세션 전환)
 - 텍스트 질의응답
 - 이미지 첨부 분석(비전 지원 모델 필요)
 - 문서 분석: `.txt`, `.md`, `.docx`
@@ -46,3 +47,4 @@ npm run check
 - 이미지 생성/처리: `sharp`
 - 파일 업로드 처리: `multer`
 - 음성 모드: 브라우저 Web Speech API(STT/TTS)
+- 이미지 설명 보강: `@xenova/transformers`(ViT-GPT2 캡셔닝)
