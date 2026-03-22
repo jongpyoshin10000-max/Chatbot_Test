@@ -10,7 +10,7 @@ import sharp from 'sharp';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import axios from 'axios';
-import { Document, Packer, Paragraph } from 'docx';
+import { Document, Packer, Paragraph, Table, TableCell, TableRow } from 'docx';
 import XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,7 +22,7 @@ const GENERATED_DIR = path.join(__dirname, 'generated');
 await fs.mkdir(GENERATED_DIR, { recursive: true });
 
 const FONT_DIR = path.join(GENERATED_DIR, 'fonts');
-const KOREAN_FONT_PATH = path.join(FONT_DIR, 'NotoSansKR-Regular.ttf');
+const KOREAN_FONT_PATH = path.join(FONT_DIR, 'NotoSansCJKkr-Regular.otf');
 
 async function ensureKoreanFont() {
   await fs.mkdir(FONT_DIR, { recursive: true });
@@ -31,7 +31,7 @@ async function ensureKoreanFont() {
     return KOREAN_FONT_PATH;
   } catch {}
 
-  const url = 'https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/TTF/Korean/NotoSansKR-Regular.ttf';
+  const url = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/Korean/NotoSansCJKkr-Regular.otf';
   const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
   await fs.writeFile(KOREAN_FONT_PATH, Buffer.from(res.data));
   return KOREAN_FONT_PATH;
@@ -48,7 +48,9 @@ function markdownToPlain(text = '') {
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
     .replace(/^#{1,6}\s*/gm, '')
     .replace(/\*\*|__|~~|`/g, '')
-    .replace(/\|/g, ' | ')
+    .replace(/^\s*\|\s*/gm, '')
+    .replace(/\s*\|\s*$/gm, '')
+    .replace(/\s*\|\s*/g, '  ')
     .trim();
 }
 
@@ -407,7 +409,21 @@ async function writePdf(filename, content) {
 
 async function writeDocx(filename, content) {
   const plain = markdownToPlain(content);
-  const doc = new Document({ sections: [{ children: plain.split('\n').map((line) => new Paragraph(line || ' ')) }] });
+  const rows = parseTabularContent(content);
+  const hasTable = rows.length > 1 && rows.some((r) => r.length > 1);
+
+  const children = [];
+  if (hasTable) {
+    const tableRows = rows.map((row) => new TableRow({
+      children: row.map((cell) => new TableCell({ children: [new Paragraph(String(cell || ''))] }))
+    }));
+    children.push(new Paragraph('요약 표')); 
+    children.push(new Table({ rows: tableRows }));
+  } else {
+    plain.split('\n').forEach((line) => children.push(new Paragraph(line || ' ')));
+  }
+
+  const doc = new Document({ sections: [{ children }] });
   await fs.writeFile(filename, await Packer.toBuffer(doc));
 }
 
