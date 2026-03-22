@@ -49,7 +49,7 @@ function resolveApiKey(headerKey) {
   return key;
 }
 
-async function chatCompletion(messages, headerKey = '') {
+async function chatCompletion(messages, headerKey = '', modelOverride = '') {
   const apiKey = resolveApiKey(headerKey);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90000);
@@ -61,7 +61,7 @@ async function chatCompletion(messages, headerKey = '') {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ model: LLM_MODEL, messages, temperature: 0.4 }),
+      body: JSON.stringify({ model: modelOverride || LLM_MODEL, messages, temperature: 0.4 }),
       signal: controller.signal
     });
 
@@ -104,10 +104,13 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-async function buildMessages({ message, historyRaw, files, onStatus }) {
+async function buildMessages({ message, historyRaw, files, onStatus, searchMode = 'standard' }) {
   onStatus?.('thinking');
   const history = JSON.parse(historyRaw || '[]');
-  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  const searchPrompt = searchMode === 'deep'
+    ? 'Use deep-search style reasoning: be thorough, compare alternatives, and include verification steps.'
+    : 'Use standard-search style responses: concise and direct.';
+  const messages = [{ role: 'system', content: `${SYSTEM_PROMPT} ${searchPrompt}` }];
   for (const item of history.slice(-12)) messages.push({ role: item.role, content: item.content });
 
   onStatus?.('analyzing');
@@ -133,13 +136,16 @@ async function buildMessages({ message, historyRaw, files, onStatus }) {
 app.post('/api/chat', upload.array('files'), async (req, res) => {
   try {
     const headerKey = req.header('x-llm-api-key') || '';
+    const selectedModel = req.body.model || '';
+    const searchMode = req.body.search_mode || 'standard';
     const messages = await buildMessages({
       message: req.body.message,
       historyRaw: req.body.history,
-      files: req.files
+      files: req.files,
+      searchMode
     });
 
-    const answer = await chatCompletion(messages, headerKey);
+    const answer = await chatCompletion(messages, headerKey, selectedModel);
     res.json({ answer });
   } catch (error) {
     res.status(error.status || 500).json({ detail: error.message || '서버 오류' });
@@ -156,15 +162,18 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
     res.flushHeaders?.();
 
     const headerKey = req.header('x-llm-api-key') || '';
+    const selectedModel = req.body.model || '';
+    const searchMode = req.body.search_mode || 'standard';
     const messages = await buildMessages({
       message: req.body.message,
       historyRaw: req.body.history,
       files: req.files,
-      onStatus: (phase) => send('status', { phase })
+      onStatus: (phase) => send('status', { phase }),
+      searchMode
     });
 
     send('status', { phase: 'generating' });
-    const answer = await chatCompletion(messages, headerKey);
+    const answer = await chatCompletion(messages, headerKey, selectedModel);
     send('done', { answer });
   } catch (error) {
     send('error', { message: error.message || '서버 오류' });

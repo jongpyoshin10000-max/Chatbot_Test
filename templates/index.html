@@ -9,32 +9,41 @@
   <body>
     <div class="app">
       <aside class="sidebar">
-        <h2>AI Workspace</h2>
-        <p>ChatGPT/Gemini 스타일 UI</p>
-        <button id="newChatBtn">+ 새 대화</button>
+        <div class="sidebar-top">
+          <button id="newChatBtn" class="primary">+ 새 대화</button>
+          <button id="settingsBtn">⚙️ 설정</button>
+          <label class="field-label">모델 선택</label>
+          <select id="modelSelect">
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+          </select>
+          <label class="field-label">검색 모드</label>
+          <select id="searchMode">
+            <option value="standard">표준 검색</option>
+            <option value="deep">심층 검색</option>
+          </select>
+        </div>
+
         <div id="chatList" class="chat-list"></div>
-        <div class="small">모델: 외부 LLM API</div>
       </aside>
+
       <main class="main">
-        <header>
+        <header class="main-header">
           <h1>멀티모달 챗봇</h1>
-          <div class="actions">
-            <button id="voiceBtn">🎤 음성모드</button>
-            <button id="genImageBtn">🖼️ 이미지 생성</button>
-            <button id="genFileBtn">📄 파일 생성</button>
-            <button id="settingsBtn">⚙️ 설정</button>
-          </div>
+          <span id="llmStatus">상태: 대기 중</span>
         </header>
-        <div id="llmStatus">상태: 대기 중</div>
+
         <section id="chat"></section>
+
         <form id="chatForm">
           <div class="attach-row">
             <input id="fileInput" type="file" multiple />
             <div id="attachInfo">첨부 파일 없음</div>
           </div>
           <div class="input-row">
-            <textarea id="message" placeholder="메시지를 입력하세요. 이미지/문서/PDF 첨부 가능"></textarea>
-            <button type="submit">전송</button>
+            <textarea id="message" placeholder="무엇이든 물어보세요"></textarea>
+            <button type="submit" class="primary">전송</button>
           </div>
         </form>
       </main>

@@ -3,20 +3,19 @@ const chatListEl = document.getElementById('chatList');
 const form = document.getElementById('chatForm');
 const messageEl = document.getElementById('message');
 const fileInput = document.getElementById('fileInput');
-const voiceBtn = document.getElementById('voiceBtn');
-const genImageBtn = document.getElementById('genImageBtn');
-const genFileBtn = document.getElementById('genFileBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const statusEl = document.getElementById('llmStatus');
 const attachInfoEl = document.getElementById('attachInfo');
+const modelSelect = document.getElementById('modelSelect');
+const searchModeSelect = document.getElementById('searchMode');
 
 let chats = [];
 let currentChatId = null;
-let voiceMode = false;
-let recognition = null;
 let pendingFiles = [];
 let runtimeApiKey = localStorage.getItem('llm_api_key') || '';
+modelSelect.value = localStorage.getItem('selected_model') || modelSelect.value;
+searchModeSelect.value = localStorage.getItem('search_mode') || searchModeSelect.value;
 
 function createChat(title = '새 대화') {
   const id = crypto.randomUUID();
@@ -56,7 +55,6 @@ function renderChatList() {
     const delBtn = document.createElement('button');
     delBtn.className = 'chat-del-btn';
     delBtn.textContent = '✕';
-    delBtn.title = '대화 삭제';
     delBtn.onclick = (e) => {
       e.stopPropagation();
       deleteChat(chat.id);
@@ -85,8 +83,8 @@ async function materializeSandboxLinks(text) {
   let updated = text;
   const matches = [...text.matchAll(regex)];
   if (!matches.length) return text;
-
   const pureContent = text.replace(regex, '').trim();
+
   for (const match of matches) {
     const label = match[1];
     const filename = decodeURIComponent(match[2]);
@@ -100,9 +98,7 @@ async function materializeSandboxLinks(text) {
       if (res.ok && data.download_url) {
         updated = updated.replace(match[0], `[${label}](${data.download_url})`);
       }
-    } catch {
-      // keep original sandbox link when conversion fails
-    }
+    } catch {}
   }
   return updated;
 }
@@ -110,7 +106,6 @@ async function materializeSandboxLinks(text) {
 function createMsgElement(role, text = '', images = []) {
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-
   const textEl = document.createElement('div');
   textEl.className = 'msg-text';
   textEl.innerHTML = renderRichText(text || '');
@@ -152,15 +147,12 @@ function buildHeaders() {
 }
 
 function setStatus(type = 'idle') {
-  const map = { idle: '대기 중', thinking: '생각 중...', analyzing: '파일 분석 중...', generating: '답변 생성 중...' };
+  const map = { idle: '대기 중', thinking: '생각 중...', analyzing: '분석 중...', generating: '생성 중...' };
   statusEl.textContent = `상태: ${map[type] || type}`;
 }
 
 function renderAttachmentInfo() {
-  if (pendingFiles.length === 0) {
-    attachInfoEl.textContent = '첨부 파일 없음';
-    return;
-  }
+  if (pendingFiles.length === 0) return (attachInfoEl.textContent = '첨부 파일 없음');
   const names = pendingFiles.slice(0, 4).map((f) => f.name).join(', ');
   attachInfoEl.textContent = `첨부됨: ${names}${pendingFiles.length > 4 ? ` 외 ${pendingFiles.length - 4}개` : ''}`;
 }
@@ -188,7 +180,6 @@ function parseSSE(chunk) {
 async function sendMessage(message, files = []) {
   const chat = getCurrentChat();
   if (!chat) return;
-
   if (chat.history.length === 0 && message.trim()) {
     chat.title = message.trim().slice(0, 20);
     renderChatList();
@@ -204,14 +195,13 @@ async function sendMessage(message, files = []) {
   const formData = new FormData();
   formData.append('message', message);
   formData.append('history', JSON.stringify(chat.history.slice(0, -1)));
+  formData.append('model', modelSelect.value);
+  formData.append('search_mode', searchModeSelect.value);
   files.forEach((f) => formData.append('files', f));
 
   const res = await fetch('/api/chat/stream', { method: 'POST', headers: buildHeaders(), body: formData });
   if (!res.ok || !res.body) {
-    const text = await res.text();
-    const err = `오류: ${text || '요청 실패'}`;
-    updateMsgElement(assistantPlaceholder, err);
-    chat.history.push({ role: 'assistant', content: err });
+    updateMsgElement(assistantPlaceholder, `오류: ${await res.text()}`);
     setStatus('idle');
     return;
   }
@@ -228,10 +218,11 @@ async function sendMessage(message, files = []) {
     const boundary = buffer.lastIndexOf('\n\n');
     const completed = buffer.slice(0, boundary);
     buffer = buffer.slice(boundary + 2);
+
     for (const evt of parseSSE(completed)) {
       if (evt.event === 'status') {
         setStatus(evt.data.phase);
-        const statusText = evt.data.phase === 'analyzing' ? '이미지/파일 분석중...' : evt.data.phase === 'generating' ? '답변 생성중...' : '생각중...';
+        const statusText = evt.data.phase === 'analyzing' ? '자료 분석중...' : evt.data.phase === 'generating' ? '답변 작성중...' : '생각중...';
         updateMsgElement(assistantPlaceholder, statusText);
       }
       if (evt.event === 'done') answer = evt.data.answer || '';
@@ -244,10 +235,6 @@ async function sendMessage(message, files = []) {
   updateMsgElement(assistantPlaceholder, final);
   chat.history.push({ role: 'assistant', content: final });
   setStatus('idle');
-
-  if (voiceMode && final && 'speechSynthesis' in window) {
-    speechSynthesis.speak(new SpeechSynthesisUtterance(final));
-  }
 }
 
 form.addEventListener('submit', async (e) => {
@@ -259,69 +246,22 @@ form.addEventListener('submit', async (e) => {
   clearPendingFiles();
   await sendMessage(message || '첨부 파일을 분석해줘', files);
 });
-fileInput.addEventListener('change', (e) => addPendingFiles(e.target.files || []));
 
-['dragenter', 'dragover'].forEach((eventName) => {
-  form.addEventListener(eventName, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    form.classList.add('dragging');
-  });
-});
-['dragleave', 'drop'].forEach((eventName) => {
-  form.addEventListener(eventName, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    form.classList.remove('dragging');
-  });
-});
+fileInput.addEventListener('change', (e) => addPendingFiles(e.target.files || []));
+['dragenter', 'dragover'].forEach((eventName) => form.addEventListener(eventName, (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  form.classList.add('dragging');
+}));
+['dragleave', 'drop'].forEach((eventName) => form.addEventListener(eventName, (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  form.classList.remove('dragging');
+}));
 form.addEventListener('drop', (e) => addPendingFiles(e.dataTransfer?.files || []));
 messageEl.addEventListener('paste', (e) => addPendingFiles(e.clipboardData?.files || []));
 
-voiceBtn.addEventListener('click', () => {
-  voiceMode = !voiceMode;
-  voiceBtn.textContent = voiceMode ? '🎤 음성모드 ON' : '🎤 음성모드';
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return alert('이 브라우저는 음성 인식을 지원하지 않습니다.');
-  if (voiceMode) {
-    recognition = new SR();
-    recognition.lang = 'ko-KR';
-    recognition.onresult = async (event) => await sendMessage(event.results[0][0].transcript, []);
-    recognition.start();
-  } else if (recognition) {
-    recognition.stop();
-  }
-});
-
 newChatBtn.addEventListener('click', () => createChat('새 대화'));
-
-genImageBtn.addEventListener('click', async () => {
-  const prompt = prompt('생성할 이미지 설명을 입력하세요');
-  if (!prompt) return;
-  const fd = new FormData();
-  fd.append('prompt', prompt);
-  const res = await fetch('/api/generate/image', { method: 'POST', body: fd });
-  const data = await res.json();
-  const msg = `이미지를 생성했습니다: <a href="${data.download_url}" download>다운로드</a> | <a href="${data.url}" target="_blank">미리보기</a>`;
-  const el = createMsgElement('assistant', msg);
-  el.querySelector('.msg-text').innerHTML = msg;
-  getCurrentChat()?.history.push({ role: 'assistant', content: msg });
-});
-
-genFileBtn.addEventListener('click', async () => {
-  const promptText = prompt('생성할 파일 설명을 입력하세요');
-  if (!promptText) return;
-  const fd = new FormData();
-  fd.append('prompt', promptText);
-  fd.append('format', 'md');
-  const res = await fetch('/api/generate/file', { method: 'POST', headers: buildHeaders(), body: fd });
-  const data = await res.json();
-  const msg = `파일 생성 완료: <a href="${data.download_url}" download>다운로드</a>`;
-  const el = createMsgElement('assistant', msg);
-  el.querySelector('.msg-text').innerHTML = msg;
-  getCurrentChat()?.history.push({ role: 'assistant', content: msg });
-});
-
 settingsBtn.addEventListener('click', () => {
   const current = runtimeApiKey ? `${runtimeApiKey.slice(0, 6)}...` : '(미설정)';
   const input = prompt(`외부 LLM API Key를 입력하세요.\n현재: ${current}\n비워두고 확인하면 저장된 키를 삭제합니다.`, runtimeApiKey);
@@ -330,6 +270,9 @@ settingsBtn.addEventListener('click', () => {
   if (runtimeApiKey) localStorage.setItem('llm_api_key', runtimeApiKey);
   else localStorage.removeItem('llm_api_key');
 });
+
+modelSelect.addEventListener('change', () => localStorage.setItem('selected_model', modelSelect.value));
+searchModeSelect.addEventListener('change', () => localStorage.setItem('search_mode', searchModeSelect.value));
 
 createChat('새 대화');
 renderAttachmentInfo();
