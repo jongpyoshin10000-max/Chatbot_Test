@@ -10,7 +10,7 @@ import sharp from 'sharp';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import axios from 'axios';
 import { Document, Packer, Paragraph } from 'docx';
-import ExcelJS from 'exceljs';
+import XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -230,14 +230,14 @@ async function writeDocx(filename, content) {
 }
 
 async function writeXlsx(filename, content) {
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('Sheet1');
-  const lines = content.split('\n').filter(Boolean);
-  for (const line of lines) {
-    if (line.includes(',')) sheet.addRow(line.split(',').map((c) => c.trim()));
-    else sheet.addRow([line]);
-  }
-  await workbook.xlsx.writeFile(filename);
+  const rows = content
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => (line.includes(',') ? line.split(',').map((c) => c.trim()) : [line]));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows.length ? rows : [['']]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  XLSX.writeFile(wb, filename);
 }
 
 async function materializeFile(filenameRaw, content = '') {

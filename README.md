@@ -46,7 +46,7 @@ npm run check
 
 ## 오픈 라이브러리 적용
 - 문서 분석: `pdf-parse`, `mammoth`
-- 파일 생성: `pdf-lib`, `docx`, `exceljs`
+- 파일 생성: `pdf-lib`, `docx`, `xlsx`
 - 이미지 생성: `axios` + 오픈모델 이미지 API, `sharp` fallback
 - 이미지 생성/처리: `sharp`
 - 파일 업로드 처리: `multer`
