@@ -48,3 +48,8 @@ npm run check
 - 파일 업로드 처리: `multer`
 - 음성 모드: 브라우저 Web Speech API(STT/TTS)
 - 이미지 처리 안정화: 메타데이터 기반 힌트 + LLM 요청 타임아웃(90초)
+
+
+## sandbox 다운로드 링크 변환
+- 답변에 `sandbox:/...` 형태 링크가 포함되면, 클라이언트가 `/api/materialize-download`를 호출해 실제 다운로드 가능한 파일로 변환합니다.
+- 변환된 링크는 `/download/:filename` 경로로 제공되어 브라우저에서 바로 다운로드됩니다.

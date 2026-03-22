@@ -68,8 +68,43 @@ function renderChatList() {
   });
 }
 
-function urlify(text) {
-  return text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+function renderRichText(text) {
+  let out = text || '';
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => {
+    if (href.startsWith('/download/') || href.startsWith('/generated/') || href.startsWith('http')) {
+      return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+    }
+    return m;
+  });
+  out = out.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  return out;
+}
+
+async function materializeSandboxLinks(text) {
+  const regex = /\[([^\]]+)\]\(sandbox:\/([^\)]+)\)/g;
+  let updated = text;
+  const matches = [...text.matchAll(regex)];
+  if (!matches.length) return text;
+
+  const pureContent = text.replace(regex, '').trim();
+  for (const match of matches) {
+    const label = match[1];
+    const filename = decodeURIComponent(match[2]);
+    try {
+      const res = await fetch('/api/materialize-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, content: pureContent })
+      });
+      const data = await res.json();
+      if (res.ok && data.download_url) {
+        updated = updated.replace(match[0], `[${label}](${data.download_url})`);
+      }
+    } catch {
+      // keep original sandbox link when conversion fails
+    }
+  }
+  return updated;
 }
 
 function createMsgElement(role, text = '', images = []) {
@@ -78,7 +113,7 @@ function createMsgElement(role, text = '', images = []) {
 
   const textEl = document.createElement('div');
   textEl.className = 'msg-text';
-  textEl.innerHTML = urlify(text || '');
+  textEl.innerHTML = renderRichText(text || '');
   div.appendChild(textEl);
 
   if (images.length) {
@@ -100,7 +135,7 @@ function createMsgElement(role, text = '', images = []) {
 
 function updateMsgElement(el, text) {
   const textEl = el.querySelector('.msg-text');
-  if (textEl) textEl.innerHTML = urlify(text || '');
+  if (textEl) textEl.innerHTML = renderRichText(text || '');
 }
 
 function renderChatMessages() {
@@ -204,7 +239,8 @@ async function sendMessage(message, files = []) {
     }
   }
 
-  const final = answer || '응답을 받지 못했습니다.';
+  let final = answer || '응답을 받지 못했습니다.';
+  final = await materializeSandboxLinks(final);
   updateMsgElement(assistantPlaceholder, final);
   chat.history.push({ role: 'assistant', content: final });
   setStatus('idle');

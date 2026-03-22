@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -180,6 +181,52 @@ app.get('/download/:filename', async (req, res) => {
     res.download(fullPath, filename);
   } catch {
     res.status(404).json({ detail: '파일을 찾을 수 없습니다.' });
+  }
+});
+
+
+app.post('/api/materialize-download', async (req, res) => {
+  try {
+    const filenameRaw = String(req.body.filename || 'result.pdf');
+    const content = String(req.body.content || '');
+    const safeName = path.basename(filenameRaw).replace(/[^a-zA-Z0-9_.가-힣-]/g, '_');
+    const ext = safeName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'txt';
+    const finalName = ext === 'pdf' ? safeName : `${safeName}.txt`;
+    const fullPath = path.join(GENERATED_DIR, finalName);
+
+    if (ext === 'pdf') {
+      const pdfDoc = await PDFDocument.create();
+      let page = pdfDoc.addPage([595, 842]);
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fontSize = 11;
+      let y = 800;
+
+      const lines = content.replace(/\r/g, '').split('\n');
+      for (const line of lines) {
+        const chunks = line.match(/.{1,90}/g) || [''];
+        for (const chunk of chunks) {
+          if (y < 50) {
+            page = pdfDoc.addPage([595, 842]);
+            y = 800;
+          }
+          const safeChunk = chunk.replace(/[^\x00-\x7F]/g, '?');
+          page.drawText(safeChunk, { x: 40, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
+          y -= 16;
+        }
+      }
+      const pdfBytes = await pdfDoc.save();
+      await fs.writeFile(fullPath, pdfBytes);
+    } else {
+      await fs.writeFile(fullPath, content, 'utf-8');
+    }
+
+    res.json({
+      filename: finalName,
+      url: `/generated/${finalName}`,
+      download_url: `/download/${finalName}`
+    });
+  } catch (error) {
+    res.status(500).json({ detail: `다운로드 파일 생성 실패: ${error.message}` });
   }
 });
 
