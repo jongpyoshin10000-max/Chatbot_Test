@@ -8,6 +8,7 @@ import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import axios from 'axios';
 import { Document, Packer, Paragraph } from 'docx';
 import XLSX from 'xlsx';
@@ -19,6 +20,90 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const GENERATED_DIR = path.join(__dirname, 'generated');
 await fs.mkdir(GENERATED_DIR, { recursive: true });
+
+const FONT_DIR = path.join(GENERATED_DIR, 'fonts');
+const KOREAN_FONT_PATH = path.join(FONT_DIR, 'NotoSansKR-Regular.ttf');
+
+async function ensureKoreanFont() {
+  await fs.mkdir(FONT_DIR, { recursive: true });
+  try {
+    await fs.access(KOREAN_FONT_PATH);
+    return KOREAN_FONT_PATH;
+  } catch {}
+
+  const url = 'https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/TTF/Korean/NotoSansKR-Regular.ttf';
+  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
+  await fs.writeFile(KOREAN_FONT_PATH, Buffer.from(res.data));
+  return KOREAN_FONT_PATH;
+}
+
+function looksLikeRefusal(text = '') {
+  return /직접.*(생성|제공).*(없|불가)|할 수 없/.test(text);
+}
+
+function markdownToPlain(text = '') {
+  return String(text)
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/!\[[^\]]*\]\(([^)]+)\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\*\*|__|~~|`/g, '')
+    .replace(/\|/g, ' | ')
+    .trim();
+}
+
+function parseTabularContent(content = '') {
+  const trimmed = String(content).trim();
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      if (parsed.every((row) => Array.isArray(row))) return parsed;
+      if (parsed.every((row) => row && typeof row === 'object')) {
+        const headers = Array.from(new Set(parsed.flatMap((r) => Object.keys(r))));
+        const rows = parsed.map((r) => headers.map((h) => r[h] ?? ''));
+        return [headers, ...rows];
+      }
+    }
+  } catch {}
+
+  const lines = trimmed.split('\n').filter(Boolean);
+  const tableLines = lines.filter((l) => l.includes('|'));
+  if (tableLines.length >= 2) {
+    const rows = tableLines
+      .filter((l, idx) => !(idx === 1 && /^\s*\|?\s*[-:]+[-| :]*\|?\s*$/.test(l)))
+      .map((ln) => ln.split('|').map((c) => c.trim()).filter((v, i, arr) => !(i === 0 && v === '') && !(i === arr.length - 1 && v === '')));
+    if (rows.length) return rows;
+  }
+
+  return lines.map((line) => (line.includes(',') ? line.split(',').map((c) => c.trim()) : [line]));
+}
+
+async function generateFileContentForFormat(format, message, headerKey, selectedModel) {
+  const prompts = {
+    pdf: 'Create polished Korean document text. No refusal. Use clear sections and bullets.',
+    docx: 'Create polished Korean business document text. No refusal. Use headings and bullet points.',
+    xlsx: 'Return ONLY JSON array-of-arrays for a readable table. First row must be headers. No prose.',
+    txt: 'Create concise plain text content in Korean. No refusal.',
+    md: 'Create clean markdown content in Korean. No refusal.'
+  };
+
+  let content;
+  try {
+    content = await chatCompletion([
+      { role: 'system', content: prompts[format] || prompts.md },
+      { role: 'user', content: message || '요약 자료를 생성해줘' }
+    ], headerKey, selectedModel);
+  } catch {
+    content = fallbackGeneratedContent(message || '요약 자료');
+  }
+
+  if (looksLikeRefusal(content)) {
+    content = fallbackGeneratedContent(message || '요약 자료');
+  }
+
+  return content;
+}
+
 
 const LLM_API_KEY = process.env.LLM_API_KEY || '';
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
@@ -221,15 +306,7 @@ app.post('/api/chat', upload.array('files'), async (req, res) => {
 
     if (shouldGenerateFileFromMessage(req.body.message, req.files)) {
       const format = detectRequestedFileFormat(req.body.message) || 'pdf';
-      let content;
-      try {
-        content = await chatCompletion([
-          { role: 'system', content: 'Create polished content for download. If user asks table, respond with clean markdown table.' },
-          { role: 'user', content: req.body.message || '요약 자료를 생성해줘' }
-        ], headerKey, selectedModel);
-      } catch {
-        content = fallbackGeneratedContent(req.body.message || '요약 자료');
-      }
+      const content = await generateFileContentForFormat(format, req.body.message, headerKey, selectedModel);
       const data = await materializeFile(`generated_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
       return res.json({ answer: `요청하신 파일을 생성했습니다.
 [다운로드](${data.download_url})` });
@@ -266,15 +343,7 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
     if (shouldGenerateFileFromMessage(req.body.message, req.files)) {
       send('status', { phase: 'generating' });
       const format = detectRequestedFileFormat(req.body.message) || 'pdf';
-      let content;
-      try {
-        content = await chatCompletion([
-          { role: 'system', content: 'Create polished content for download. If user asks table, respond with clean markdown table.' },
-          { role: 'user', content: req.body.message || '요약 자료를 생성해줘' }
-        ], headerKey, selectedModel);
-      } catch {
-        content = fallbackGeneratedContent(req.body.message || '요약 자료');
-      }
+      const content = await generateFileContentForFormat(format, req.body.message, headerKey, selectedModel);
       const data = await materializeFile(`generated_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
       send('done', { answer: `요청하신 파일을 생성했습니다.
 [다운로드](${data.download_url})` });
@@ -305,17 +374,31 @@ app.get('/download/:filename', async (req, res) => {
 
 async function writePdf(filename, content) {
   const pdfDoc = await PDFDocument.create();
+  pdfDoc.registerFontkit(fontkit);
   let page = pdfDoc.addPage([595, 842]);
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  let font;
+  let unicodeSafe = true;
+  try {
+    const fontPath = await ensureKoreanFont();
+    const bytes = await fs.readFile(fontPath);
+    font = await pdfDoc.embedFont(bytes);
+  } catch {
+    unicodeSafe = false;
+    font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  }
+
   let y = 800;
-  for (const line of content.replace(/\r/g, '').split('\n')) {
-    const chunks = line.match(/.{1,90}/g) || [''];
+  const plain = markdownToPlain(content);
+  for (const line of plain.replace(/\r/g, '').split('\n')) {
+    const chunks = line.match(/.{1,70}/g) || [''];
     for (const c of chunks) {
       if (y < 50) {
         page = pdfDoc.addPage([595, 842]);
         y = 800;
       }
-      page.drawText(c.replace(/[^\x00-\x7F]/g, '?'), { x: 40, y, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
+      const chunk = unicodeSafe ? c : c.replace(/[^\x00-\x7F]/g, '?');
+      page.drawText(chunk, { x: 40, y, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
       y -= 16;
     }
   }
@@ -323,15 +406,13 @@ async function writePdf(filename, content) {
 }
 
 async function writeDocx(filename, content) {
-  const doc = new Document({ sections: [{ children: content.split('\n').map((line) => new Paragraph(line || ' ')) }] });
+  const plain = markdownToPlain(content);
+  const doc = new Document({ sections: [{ children: plain.split('\n').map((line) => new Paragraph(line || ' ')) }] });
   await fs.writeFile(filename, await Packer.toBuffer(doc));
 }
 
 async function writeXlsx(filename, content) {
-  const rows = content
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => (line.includes(',') ? line.split(',').map((c) => c.trim()) : [line]));
+  const rows = parseTabularContent(content);
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(rows.length ? rows : [['']]);
   XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
@@ -377,10 +458,7 @@ app.post('/api/generate/file', express.urlencoded({ extended: true }), async (re
     const prompt = req.body.prompt || '';
     const format = (req.body.format || 'md').toLowerCase();
     const headerKey = req.header('x-llm-api-key') || '';
-    const content = await chatCompletion([
-      { role: 'system', content: 'Create downloadable content exactly as requested.' },
-      { role: 'user', content: prompt }
-    ], headerKey);
+    const content = await generateFileContentForFormat(format, prompt, headerKey, req.body.model || '');
 
     const data = await materializeFile(`file_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
     res.json(data);
