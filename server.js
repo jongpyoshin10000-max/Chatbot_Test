@@ -99,20 +99,82 @@ function shouldGenerateImageFromMessage(message = '', files = []) {
   return /이미지|그림|사진/.test(text) && /생성|만들|그려|제공/.test(text) && !/분석|첨부/.test(text);
 }
 
-async function createGeneratedImage(prompt = 'Untitled') {
+async function createGeneratedImage(prompt = 'Untitled', headerKey = '') {
   const name = `image_${crypto.randomUUID().slice(0, 8)}.png`;
   const outputPath = path.join(GENERATED_DIR, name);
 
+  // 1) Try OpenAI-compatible image generation first (best UX)
+  try {
+    const apiKey = resolveApiKey(headerKey);
+    const response = await fetch(`${LLM_BASE_URL}/images/generations`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'gpt-image-1', prompt, size: '1024x1024' })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const item = data?.data?.[0];
+      if (item?.b64_json) {
+        await fs.writeFile(outputPath, Buffer.from(item.b64_json, 'base64'));
+      } else if (item?.url) {
+        const img = await axios.get(item.url, { responseType: 'arraybuffer', timeout: 45000 });
+        await fs.writeFile(outputPath, Buffer.from(img.data));
+      }
+      if (await fs.access(outputPath).then(() => true).catch(() => false)) {
+        return { url: `/generated/${name}`, download_url: `/download/${name}`, filename: name };
+      }
+    }
+  } catch {
+    // continue to fallback
+  }
+
+  // 2) Open model image endpoint fallback
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
     const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
     await fs.writeFile(outputPath, Buffer.from(response.data));
   } catch {
+    // 3) Last-resort local fallback
     const svg = `<svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#141821"/><text x="64" y="120" fill="#f3f6ff" font-size="54">AI IMAGE</text><text x="64" y="190" fill="#d5ddff" font-size="30">${prompt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</text></svg>`;
     await sharp(Buffer.from(svg)).png().toFile(outputPath);
   }
 
   return { url: `/generated/${name}`, download_url: `/download/${name}`, filename: name };
+}
+
+function detectRequestedFileFormat(message = '') {
+  const text = String(message || '').toLowerCase();
+  if (/xlsx|excel|엑셀/.test(text)) return 'xlsx';
+  if (/docx|word|워드/.test(text)) return 'docx';
+  if (/pdf/.test(text)) return 'pdf';
+  if (/txt|text/.test(text)) return 'txt';
+  if (/md|markdown/.test(text)) return 'md';
+  return '';
+}
+
+function shouldGenerateFileFromMessage(message = '', files = []) {
+  if ((files || []).length > 0) return false;
+  const text = String(message || '');
+  const wantsFile = /파일|pdf|docx|xlsx|word|excel|엑셀|워드/.test(text);
+  const wantsCreate = /생성|만들|제공|내려받|다운로드/.test(text);
+  return wantsFile && wantsCreate;
+}
+
+function fallbackGeneratedContent(message = '') {
+  const topic = String(message || '요약 자료');
+  return `# 자동 생성 문서
+
+요청: ${topic}
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 요청 기반 자료 생성 |
+| 생성시각 | ${new Date().toISOString()} |
+| 비고 | LLM 키 없이 생성된 기본 템플릿 |`;
 }
 
 async function buildMessages({ message, historyRaw, files, onStatus, searchMode = 'standard' }) {
@@ -126,7 +188,9 @@ async function buildMessages({ message, historyRaw, files, onStatus, searchMode 
   for (const item of history.slice(-12)) messages.push({ role: item.role, content: item.content });
 
   onStatus?.('analyzing');
-  const userContent = [{ type: 'text', text: message || '' }];
+  const tableHint = /표|테이블/.test(String(message || ''));
+  const baseText = tableHint ? `${message || ''}\n답변은 가독성 좋은 markdown 표 형식으로 제공하세요.` : (message || '');
+  const userContent = [{ type: 'text', text: baseText }];
   for (const file of files || []) {
     if (isImageFile(file)) {
       const b64 = file.buffer.toString('base64');
@@ -151,8 +215,24 @@ app.post('/api/chat', upload.array('files'), async (req, res) => {
     const searchMode = req.body.search_mode || 'standard';
 
     if (shouldGenerateImageFromMessage(req.body.message, req.files)) {
-      const generated = await createGeneratedImage(req.body.message || 'image');
+      const generated = await createGeneratedImage(req.body.message || 'image', headerKey);
       return res.json({ answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})` });
+    }
+
+    if (shouldGenerateFileFromMessage(req.body.message, req.files)) {
+      const format = detectRequestedFileFormat(req.body.message) || 'pdf';
+      let content;
+      try {
+        content = await chatCompletion([
+          { role: 'system', content: 'Create polished content for download. If user asks table, respond with clean markdown table.' },
+          { role: 'user', content: req.body.message || '요약 자료를 생성해줘' }
+        ], headerKey, selectedModel);
+      } catch {
+        content = fallbackGeneratedContent(req.body.message || '요약 자료');
+      }
+      const data = await materializeFile(`generated_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
+      return res.json({ answer: `요청하신 파일을 생성했습니다.
+[다운로드](${data.download_url})` });
     }
 
     const messages = await buildMessages({ message: req.body.message, historyRaw: req.body.history, files: req.files, searchMode });
@@ -178,8 +258,26 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
 
     if (shouldGenerateImageFromMessage(req.body.message, req.files)) {
       send('status', { phase: 'generating' });
-      const generated = await createGeneratedImage(req.body.message || 'image');
+      const generated = await createGeneratedImage(req.body.message || 'image', headerKey);
       send('done', { answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})` });
+      return;
+    }
+
+    if (shouldGenerateFileFromMessage(req.body.message, req.files)) {
+      send('status', { phase: 'generating' });
+      const format = detectRequestedFileFormat(req.body.message) || 'pdf';
+      let content;
+      try {
+        content = await chatCompletion([
+          { role: 'system', content: 'Create polished content for download. If user asks table, respond with clean markdown table.' },
+          { role: 'user', content: req.body.message || '요약 자료를 생성해줘' }
+        ], headerKey, selectedModel);
+      } catch {
+        content = fallbackGeneratedContent(req.body.message || '요약 자료');
+      }
+      const data = await materializeFile(`generated_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
+      send('done', { answer: `요청하신 파일을 생성했습니다.
+[다운로드](${data.download_url})` });
       return;
     }
 
@@ -268,7 +366,7 @@ app.post('/api/materialize-download', async (req, res) => {
 
 app.post('/api/generate/image', express.urlencoded({ extended: true }), async (req, res) => {
   try {
-    res.json(await createGeneratedImage(req.body.prompt || 'Untitled'));
+    res.json(await createGeneratedImage(req.body.prompt || 'Untitled', req.header('x-llm-api-key') || ''));
   } catch (error) {
     res.status(500).json({ detail: error.message || '이미지 생성 실패' });
   }

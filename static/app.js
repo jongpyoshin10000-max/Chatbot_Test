@@ -66,8 +66,49 @@ function renderChatList() {
   });
 }
 
+function convertMarkdownTables(input) {
+  const lines = input.split('\n');
+  const out = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const next = lines[i + 1] || '';
+    const isTableStart = line.includes('|') && /^\s*\|?\s*[-:]+[-| :]*\|?\s*$/.test(next);
+
+    if (!isTableStart) {
+      out.push(line);
+      i += 1;
+      continue;
+    }
+
+    const tableLines = [line, next];
+    i += 2;
+    while (i < lines.length && lines[i].includes('|')) {
+      tableLines.push(lines[i]);
+      i += 1;
+    }
+
+    const rows = tableLines
+      .filter((_, idx) => idx !== 1)
+      .map((ln) => ln.split('|').map((c) => c.trim()).filter((v, idx2, arr) => !(idx2 === 0 && v === '') && !(idx2 === arr.length - 1 && v === '')));
+
+    if (!rows.length) {
+      out.push(tableLines.join('\n'));
+      continue;
+    }
+
+    const header = rows[0].map((c) => `<th>${c}</th>`).join('');
+    const body = rows.slice(1).map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+    out.push(`<div class="table-wrap"><table class="md-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`);
+  }
+
+  return out.join('\n');
+}
+
 function renderRichText(text) {
   let out = text || '';
+  out = convertMarkdownTables(out);
   out = out.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m, src) => {
     if (src.startsWith('/generated/') || src.startsWith('http')) {
       return `<div class="inline-image-wrap"><img class="inline-image" src="${src}" alt="generated" /></div>`;
@@ -92,8 +133,8 @@ async function materializeSandboxLinks(text) {
   let updated = text;
   const matches = [...text.matchAll(regex)];
   if (!matches.length) return text;
-  const pureContent = text.replace(regex, '').trim();
 
+  const pureContent = text.replace(regex, '').trim();
   for (const match of matches) {
     const label = match[1];
     const filename = decodeURIComponent(match[2]);
@@ -219,6 +260,7 @@ async function sendMessage(message, files = []) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -282,7 +324,6 @@ settingsBtn.addEventListener('click', () => {
 
 modelSelect.addEventListener('change', () => localStorage.setItem('selected_model', modelSelect.value));
 searchModeSelect.addEventListener('change', () => localStorage.setItem('search_mode', searchModeSelect.value));
-
 
 chatEl.addEventListener('click', async (e) => {
   const link = e.target.closest('a.sandbox-link');
