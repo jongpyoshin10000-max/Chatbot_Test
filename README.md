@@ -11,7 +11,7 @@
 - 문서 분석: `.txt`, `.md`, `.docx`
 - PDF 분석
 - 마이크 버튼으로 음성모드(STT/TTS)
-- 요청 시 파일(.md/.txt) 생성 후 다운로드 링크 제공
+- 요청 시 파일(.md/.txt/.pdf/.docx/.xlsx) 생성 후 다운로드 링크 제공
 - 요청 시 이미지 생성 후 다운로드 링크 제공
 
 - 드래그앤드롭/붙여넣기 업로드(파일 탐색기 없이 채팅창에 바로 첨부)
@@ -46,6 +46,8 @@ npm run check
 
 ## 오픈 라이브러리 적용
 - 문서 분석: `pdf-parse`, `mammoth`
+- 파일 생성: `pdf-lib`, `docx`, `exceljs`
+- 이미지 생성: `axios` + 오픈모델 이미지 API, `sharp` fallback
 - 이미지 생성/처리: `sharp`
 - 파일 업로드 처리: `multer`
 - 음성 모드: 브라우저 Web Speech API(STT/TTS)
@@ -61,3 +63,8 @@ npm run check
 - ChatGPT 유사한 레이아웃(좌측 대화목록 + 우측 대화영역)
 - 회색/하얀색 기반 테마
 - 메인 헤더('멀티모달 챗봇')는 sticky 고정
+
+
+## 생성 기능 개선
+- 이미지 생성 요청 시 외부 오픈모델 이미지 API를 사용해 실제 생성 이미지를 저장/제공합니다(실패 시 로컬 fallback).
+- 파일 생성은 txt/md뿐 아니라 pdf/docx/xlsx까지 materialize 가능합니다.

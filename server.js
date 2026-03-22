@@ -8,6 +8,9 @@ import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import sharp from 'sharp';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import axios from 'axios';
+import { Document, Packer, Paragraph } from 'docx';
+import ExcelJS from 'exceljs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,12 +25,7 @@ const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
 const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
 const PORT = Number(process.env.PORT || 8000);
 
-const SYSTEM_PROMPT = [
-  'You are a multimodal assistant.',
-  'Answer in the user\'s language.',
-  'If files are provided, analyze them and explain clearly.',
-  'When asked, create concise downloadable contents.'
-].join(' ');
+const SYSTEM_PROMPT = 'You are a multimodal assistant. Answer in the user\'s language.';
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
@@ -35,9 +33,7 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 app.use('/static', express.static(path.join(__dirname, 'static')));
 app.use('/generated', express.static(GENERATED_DIR));
 
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'templates', 'index.html'));
-});
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'templates', 'index.html')));
 
 function resolveApiKey(headerKey) {
   const key = (headerKey || '').trim() || LLM_API_KEY;
@@ -65,17 +61,11 @@ async function chatCompletion(messages, headerKey = '', modelOverride = '') {
       signal: controller.signal
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`LLM error: ${text}`);
-    }
-
+    if (!response.ok) throw new Error(`LLM error: ${await response.text()}`);
     const data = await response.json();
     return data?.choices?.[0]?.message?.content || '응답을 생성하지 못했습니다.';
   } catch (e) {
-    if (e.name === 'AbortError') {
-      throw new Error('LLM 응답 시간이 초과되었습니다. 다시 시도해 주세요.');
-    }
+    if (e.name === 'AbortError') throw new Error('LLM 응답 시간이 초과되었습니다. 다시 시도해 주세요.');
     throw e;
   } finally {
     clearTimeout(timeout);
@@ -89,8 +79,7 @@ function isImageFile(file) {
 async function getImageQuickHint(file) {
   try {
     const meta = await sharp(file.buffer).metadata();
-    const sizeKB = Math.round(file.size / 1024);
-    return `이미지 정보: format=${meta.format}, width=${meta.width}, height=${meta.height}, size=${sizeKB}KB`;
+    return `이미지 정보: format=${meta.format}, width=${meta.width}, height=${meta.height}`;
   } catch {
     return '이미지 메타데이터를 읽지 못했습니다.';
   }
@@ -104,12 +93,35 @@ async function extractTextFromFile(file) {
   return '';
 }
 
+function shouldGenerateImageFromMessage(message = '', files = []) {
+  if ((files || []).length > 0) return false;
+  const text = String(message || '');
+  return /이미지|그림|사진/.test(text) && /생성|만들|그려|제공/.test(text) && !/분석|첨부/.test(text);
+}
+
+async function createGeneratedImage(prompt = 'Untitled') {
+  const name = `image_${crypto.randomUUID().slice(0, 8)}.png`;
+  const outputPath = path.join(GENERATED_DIR, name);
+
+  try {
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
+    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 45000 });
+    await fs.writeFile(outputPath, Buffer.from(response.data));
+  } catch {
+    const svg = `<svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#141821"/><text x="64" y="120" fill="#f3f6ff" font-size="54">AI IMAGE</text><text x="64" y="190" fill="#d5ddff" font-size="30">${prompt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</text></svg>`;
+    await sharp(Buffer.from(svg)).png().toFile(outputPath);
+  }
+
+  return { url: `/generated/${name}`, download_url: `/download/${name}`, filename: name };
+}
+
 async function buildMessages({ message, historyRaw, files, onStatus, searchMode = 'standard' }) {
   onStatus?.('thinking');
   const history = JSON.parse(historyRaw || '[]');
   const searchPrompt = searchMode === 'deep'
-    ? 'Use deep-search style reasoning: be thorough, compare alternatives, and include verification steps.'
-    : 'Use standard-search style responses: concise and direct.';
+    ? 'Use deep-search style reasoning: be thorough and compare alternatives.'
+    : 'Use standard concise responses.';
+
   const messages = [{ role: 'system', content: `${SYSTEM_PROMPT} ${searchPrompt}` }];
   for (const item of history.slice(-12)) messages.push({ role: item.role, content: item.content });
 
@@ -117,52 +129,19 @@ async function buildMessages({ message, historyRaw, files, onStatus, searchMode 
   const userContent = [{ type: 'text', text: message || '' }];
   for (const file of files || []) {
     if (isImageFile(file)) {
-      const base64 = file.buffer.toString('base64');
-      const quickHint = await getImageQuickHint(file);
-      userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
-      userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname})를 분석해줘. ${quickHint}` });
-      continue;
+      const b64 = file.buffer.toString('base64');
+      const hint = await getImageQuickHint(file);
+      userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${b64}` } });
+      userContent.push({ type: 'text', text: `첨부 이미지(${file.originalname}) 분석 요청. ${hint}` });
+    } else {
+      const text = await extractTextFromFile(file);
+      const excerpt = text ? text.slice(0, 12000) : '(텍스트 추출 실패 또는 미지원 형식)';
+      userContent.push({ type: 'text', text: `첨부 파일(${file.originalname}) 내용:\n${excerpt}` });
     }
-
-    const extracted = await extractTextFromFile(file);
-    const excerpt = extracted ? extracted.slice(0, 12000) : '(텍스트 추출 실패 또는 미지원 형식)';
-    userContent.push({ type: 'text', text: `첨부 파일(${file.originalname}) 내용:\n${excerpt}` });
   }
 
   messages.push({ role: 'user', content: userContent });
   return messages;
-}
-
-
-function shouldGenerateImageFromMessage(message = '', files = []) {
-  if ((files || []).length > 0) return false;
-  const text = String(message || '');
-  const hasImageWord = /이미지|그림|사진/.test(text);
-  const hasGenWord = /생성|만들|그려|제공/.test(text);
-  const isAnalysis = /분석|첨부/.test(text);
-  return hasImageWord && hasGenWord && !isAnalysis;
-}
-
-async function createGeneratedImage(prompt = 'Untitled') {
-  const name = `image_${crypto.randomUUID().slice(0, 8)}.png`;
-  const outputPath = path.join(GENERATED_DIR, name);
-  const svg = `
-    <svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
-      <rect width="100%" height="100%" fill="#141821" />
-      <text x="64" y="120" fill="#f3f6ff" font-size="54" font-family="Arial">AI IMAGE</text>
-      <foreignObject x="64" y="180" width="896" height="760">
-        <div xmlns="http://www.w3.org/1999/xhtml" style="font-size:34px;color:#d5ddff;line-height:1.5;font-family:Arial;">${prompt
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')}</div>
-      </foreignObject>
-    </svg>`;
-  await sharp(Buffer.from(svg)).png().toFile(outputPath);
-  return {
-    url: `/generated/${name}`,
-    download_url: `/download/${name}`,
-    filename: name
-  };
 }
 
 app.post('/api/chat', upload.array('files'), async (req, res) => {
@@ -171,20 +150,12 @@ app.post('/api/chat', upload.array('files'), async (req, res) => {
     const selectedModel = req.body.model || '';
     const searchMode = req.body.search_mode || 'standard';
 
-
     if (shouldGenerateImageFromMessage(req.body.message, req.files)) {
       const generated = await createGeneratedImage(req.body.message || 'image');
-      return res.json({
-        answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})`
-      });
+      return res.json({ answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})` });
     }
-    const messages = await buildMessages({
-      message: req.body.message,
-      historyRaw: req.body.history,
-      files: req.files,
-      searchMode
-    });
 
+    const messages = await buildMessages({ message: req.body.message, historyRaw: req.body.history, files: req.files, searchMode });
     const answer = await chatCompletion(messages, headerKey, selectedModel);
     res.json({ answer });
   } catch (error) {
@@ -212,14 +183,7 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
       return;
     }
 
-    const messages = await buildMessages({
-      message: req.body.message,
-      historyRaw: req.body.history,
-      files: req.files,
-      onStatus: (phase) => send('status', { phase }),
-      searchMode
-    });
-
+    const messages = await buildMessages({ message: req.body.message, historyRaw: req.body.history, files: req.files, onStatus: (phase) => send('status', { phase }), searchMode });
     send('status', { phase: 'generating' });
     const answer = await chatCompletion(messages, headerKey, selectedModel);
     send('done', { answer });
@@ -241,47 +205,62 @@ app.get('/download/:filename', async (req, res) => {
   }
 });
 
+async function writePdf(filename, content) {
+  const pdfDoc = await PDFDocument.create();
+  let page = pdfDoc.addPage([595, 842]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  let y = 800;
+  for (const line of content.replace(/\r/g, '').split('\n')) {
+    const chunks = line.match(/.{1,90}/g) || [''];
+    for (const c of chunks) {
+      if (y < 50) {
+        page = pdfDoc.addPage([595, 842]);
+        y = 800;
+      }
+      page.drawText(c.replace(/[^\x00-\x7F]/g, '?'), { x: 40, y, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
+      y -= 16;
+    }
+  }
+  await fs.writeFile(filename, await pdfDoc.save());
+}
+
+async function writeDocx(filename, content) {
+  const doc = new Document({ sections: [{ children: content.split('\n').map((line) => new Paragraph(line || ' ')) }] });
+  await fs.writeFile(filename, await Packer.toBuffer(doc));
+}
+
+async function writeXlsx(filename, content) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Sheet1');
+  const lines = content.split('\n').filter(Boolean);
+  for (const line of lines) {
+    if (line.includes(',')) sheet.addRow(line.split(',').map((c) => c.trim()));
+    else sheet.addRow([line]);
+  }
+  await workbook.xlsx.writeFile(filename);
+}
+
+async function materializeFile(filenameRaw, content = '') {
+  const safeName = path.basename(filenameRaw).replace(/[^a-zA-Z0-9_.가-힣-]/g, '_');
+  const ext = (safeName.split('.').pop() || 'txt').toLowerCase();
+  const base = safeName.replace(/\.[^.]+$/, '');
+  const allowed = ['txt', 'md', 'pdf', 'docx', 'xlsx'];
+  const finalExt = allowed.includes(ext) ? ext : 'txt';
+  const finalName = `${base}.${finalExt}`;
+  const fullPath = path.join(GENERATED_DIR, finalName);
+
+  if (finalExt === 'pdf') await writePdf(fullPath, content);
+  else if (finalExt === 'docx') await writeDocx(fullPath, content);
+  else if (finalExt === 'xlsx') await writeXlsx(fullPath, content);
+  else await fs.writeFile(fullPath, content, 'utf-8');
+
+  return { filename: finalName, url: `/generated/${finalName}`, download_url: `/download/${finalName}` };
+}
 
 app.post('/api/materialize-download', async (req, res) => {
   try {
-    const filenameRaw = String(req.body.filename || 'result.pdf');
-    const content = String(req.body.content || '');
-    const safeName = path.basename(filenameRaw).replace(/[^a-zA-Z0-9_.가-힣-]/g, '_');
-    const ext = safeName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'txt';
-    const finalName = ext === 'pdf' ? safeName : `${safeName}.txt`;
-    const fullPath = path.join(GENERATED_DIR, finalName);
-
-    if (ext === 'pdf') {
-      const pdfDoc = await PDFDocument.create();
-      let page = pdfDoc.addPage([595, 842]);
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontSize = 11;
-      let y = 800;
-
-      const lines = content.replace(/\r/g, '').split('\n');
-      for (const line of lines) {
-        const chunks = line.match(/.{1,90}/g) || [''];
-        for (const chunk of chunks) {
-          if (y < 50) {
-            page = pdfDoc.addPage([595, 842]);
-            y = 800;
-          }
-          const safeChunk = chunk.replace(/[^\x00-\x7F]/g, '?');
-          page.drawText(safeChunk, { x: 40, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
-          y -= 16;
-        }
-      }
-      const pdfBytes = await pdfDoc.save();
-      await fs.writeFile(fullPath, pdfBytes);
-    } else {
-      await fs.writeFile(fullPath, content, 'utf-8');
-    }
-
-    res.json({
-      filename: finalName,
-      url: `/generated/${finalName}`,
-      download_url: `/download/${finalName}`
-    });
+    const data = await materializeFile(String(req.body.filename || 'result.txt'), String(req.body.content || ''));
+    res.json(data);
   } catch (error) {
     res.status(500).json({ detail: `다운로드 파일 생성 실패: ${error.message}` });
   }
@@ -289,9 +268,7 @@ app.post('/api/materialize-download', async (req, res) => {
 
 app.post('/api/generate/image', express.urlencoded({ extended: true }), async (req, res) => {
   try {
-    const prompt = req.body.prompt || 'Untitled';
-    const generated = await createGeneratedImage(prompt);
-    res.json(generated);
+    res.json(await createGeneratedImage(req.body.prompt || 'Untitled'));
   } catch (error) {
     res.status(500).json({ detail: error.message || '이미지 생성 실패' });
   }
@@ -300,29 +277,21 @@ app.post('/api/generate/image', express.urlencoded({ extended: true }), async (r
 app.post('/api/generate/file', express.urlencoded({ extended: true }), async (req, res) => {
   try {
     const prompt = req.body.prompt || '';
-    const format = req.body.format === 'txt' ? 'txt' : 'md';
+    const format = (req.body.format || 'md').toLowerCase();
     const headerKey = req.header('x-llm-api-key') || '';
     const content = await chatCompletion([
       { role: 'system', content: 'Create downloadable content exactly as requested.' },
       { role: 'user', content: prompt }
     ], headerKey);
 
-    const name = `file_${crypto.randomUUID().slice(0, 8)}.${format}`;
-    const outputPath = path.join(GENERATED_DIR, name);
-    await fs.writeFile(outputPath, content, 'utf-8');
-    res.json({
-      url: `/generated/${name}`,
-      download_url: `/download/${name}`,
-      filename: name
-    });
+    const data = await materializeFile(`file_${crypto.randomUUID().slice(0, 8)}.${format}`, content);
+    res.json(data);
   } catch (error) {
     res.status(500).json({ detail: error.message || '파일 생성 실패' });
   }
 });
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, model: LLM_MODEL });
-});
+app.get('/health', (_req, res) => res.json({ ok: true, model: LLM_MODEL }));
 
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
