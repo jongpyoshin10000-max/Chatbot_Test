@@ -133,11 +133,51 @@ async function buildMessages({ message, historyRaw, files, onStatus, searchMode 
   return messages;
 }
 
+
+function shouldGenerateImageFromMessage(message = '', files = []) {
+  if ((files || []).length > 0) return false;
+  const text = String(message || '');
+  const hasImageWord = /이미지|그림|사진/.test(text);
+  const hasGenWord = /생성|만들|그려|제공/.test(text);
+  const isAnalysis = /분석|첨부/.test(text);
+  return hasImageWord && hasGenWord && !isAnalysis;
+}
+
+async function createGeneratedImage(prompt = 'Untitled') {
+  const name = `image_${crypto.randomUUID().slice(0, 8)}.png`;
+  const outputPath = path.join(GENERATED_DIR, name);
+  const svg = `
+    <svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#141821" />
+      <text x="64" y="120" fill="#f3f6ff" font-size="54" font-family="Arial">AI IMAGE</text>
+      <foreignObject x="64" y="180" width="896" height="760">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-size:34px;color:#d5ddff;line-height:1.5;font-family:Arial;">${prompt
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')}</div>
+      </foreignObject>
+    </svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(outputPath);
+  return {
+    url: `/generated/${name}`,
+    download_url: `/download/${name}`,
+    filename: name
+  };
+}
+
 app.post('/api/chat', upload.array('files'), async (req, res) => {
   try {
     const headerKey = req.header('x-llm-api-key') || '';
     const selectedModel = req.body.model || '';
     const searchMode = req.body.search_mode || 'standard';
+
+
+    if (shouldGenerateImageFromMessage(req.body.message, req.files)) {
+      const generated = await createGeneratedImage(req.body.message || 'image');
+      return res.json({
+        answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})`
+      });
+    }
     const messages = await buildMessages({
       message: req.body.message,
       historyRaw: req.body.history,
@@ -164,6 +204,14 @@ app.post('/api/chat/stream', upload.array('files'), async (req, res) => {
     const headerKey = req.header('x-llm-api-key') || '';
     const selectedModel = req.body.model || '';
     const searchMode = req.body.search_mode || 'standard';
+
+    if (shouldGenerateImageFromMessage(req.body.message, req.files)) {
+      send('status', { phase: 'generating' });
+      const generated = await createGeneratedImage(req.body.message || 'image');
+      send('done', { answer: `요청하신 이미지를 생성했습니다.\n![generated](${generated.url})\n[다운로드](${generated.download_url})` });
+      return;
+    }
+
     const messages = await buildMessages({
       message: req.body.message,
       historyRaw: req.body.history,
@@ -242,27 +290,8 @@ app.post('/api/materialize-download', async (req, res) => {
 app.post('/api/generate/image', express.urlencoded({ extended: true }), async (req, res) => {
   try {
     const prompt = req.body.prompt || 'Untitled';
-    const name = `image_${crypto.randomUUID().slice(0, 8)}.png`;
-    const outputPath = path.join(GENERATED_DIR, name);
-
-    const svg = `
-      <svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
-        <rect width="100%" height="100%" fill="#141821" />
-        <text x="64" y="120" fill="#f3f6ff" font-size="54" font-family="Arial">AI IMAGE</text>
-        <foreignObject x="64" y="180" width="896" height="760">
-          <div xmlns="http://www.w3.org/1999/xhtml" style="font-size:34px;color:#d5ddff;line-height:1.5;font-family:Arial;">${prompt
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')}</div>
-        </foreignObject>
-      </svg>`;
-
-    await sharp(Buffer.from(svg)).png().toFile(outputPath);
-    res.json({
-      url: `/generated/${name}`,
-      download_url: `/download/${name}`,
-      filename: name
-    });
+    const generated = await createGeneratedImage(prompt);
+    res.json(generated);
   } catch (error) {
     res.status(500).json({ detail: error.message || '이미지 생성 실패' });
   }

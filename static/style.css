@@ -45,3 +45,6 @@ button.primary { background: #111827; color: #fff; border-color: #111827; }
 #attachInfo { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; color: #6b7280; font-size: 12px; }
 textarea { min-height: 90px; resize: vertical; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px; background: #fff; color: #111827; }
 #chatForm.dragging { outline: 2px dashed #6b7280; }
+
+.inline-image-wrap { margin-top: 8px; }
+.inline-image { max-width: 320px; border-radius: 10px; border: 1px solid #d1d5db; }

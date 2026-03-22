@@ -68,9 +68,18 @@ function renderChatList() {
 
 function renderRichText(text) {
   let out = text || '';
+  out = out.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (m, src) => {
+    if (src.startsWith('/generated/') || src.startsWith('http')) {
+      return `<div class="inline-image-wrap"><img class="inline-image" src="${src}" alt="generated" /></div>`;
+    }
+    return m;
+  });
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => {
     if (href.startsWith('/download/') || href.startsWith('/generated/') || href.startsWith('http')) {
       return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+    }
+    if (href.startsWith('sandbox:/')) {
+      return `<a href="${href}" class="sandbox-link" data-sandbox="${href}">${label}</a>`;
     }
     return m;
   });
@@ -273,6 +282,32 @@ settingsBtn.addEventListener('click', () => {
 
 modelSelect.addEventListener('change', () => localStorage.setItem('selected_model', modelSelect.value));
 searchModeSelect.addEventListener('change', () => localStorage.setItem('search_mode', searchModeSelect.value));
+
+
+chatEl.addEventListener('click', async (e) => {
+  const link = e.target.closest('a.sandbox-link');
+  if (!link) return;
+  e.preventDefault();
+  const href = link.dataset.sandbox || link.getAttribute('href');
+  const m = /sandbox:\/(.+)/.exec(href || '');
+  if (!m) return;
+  const filename = decodeURIComponent(m[1]);
+  const parentMsg = link.closest('.msg');
+  const msgText = parentMsg?.innerText || '';
+
+  const res = await fetch('/api/materialize-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, content: msgText })
+  });
+  const data = await res.json();
+  if (res.ok && data.download_url) {
+    link.href = data.download_url;
+    link.classList.remove('sandbox-link');
+    link.setAttribute('target', '_blank');
+    link.click();
+  }
+});
 
 createChat('새 대화');
 renderAttachmentInfo();
